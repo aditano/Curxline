@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- Copyright 2026 Anthony DiTano. Licensed under GPL-3.0-or-later. See LICENSE. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -1462,7 +1463,7 @@
       {
         id: "hard-liars",
         category: "Reasoning and math",
-        title: "Two false statements",
+        title: "Two true statements",
         presets: suite("quick"),
         prompt: "Exactly one of A, B, C, D, E committed the breach, and exactly two of the five statements are true. A says: C did it. B says: A did not do it. C says: B or D did it. D says: C did not do it. E says: E did it. Who committed the breach? Return only JSON: {\"answer\":\"<letter>\",\"confidence\":0-100}.",
         check: checks.exact("C", [], { conflicts: ["A", "B", "D", "E"] })
@@ -1481,7 +1482,17 @@
         title: "Constrained shortest path",
         presets: suite("broad"),
         prompt: "Undirected edges with weights: A-B 2, A-C 3, A-E 1, B-D 4, B-E 2, C-D 1, C-E 3, D-E 1, D-F 5, E-F 4. Find the shortest route from A to F that visits both D and E, with D appearing before E. Return only JSON: {\"answer\":<number>,\"path\":\"<nodes>\",\"confidence\":0-100}.",
-        check: checks.number(9)
+        // Contract: distance 9. D before E rules out A-E-D-F (distance 7). The route is A-C-D-E-F.
+        check: ({ parsed, answer, raw }) => {
+          const distance = chooseNumber(judgeText(parsed, answer, raw), 9, 0);
+          const pathSource = parsed?.path;
+          const route = pathSource == null || pathSource === ""
+            ? ""
+            : String(pathSource).toUpperCase().replace(/[^A-Z]/g, "");
+          const pathOk = route === "" || route === "ACDEF";
+          const ok = within(distance, 9, 0) && pathOk;
+          return verdict(ok, ok ? "Distance matched." : "Expected distance 9 along A-C-D-E-F.", "9 via A-C-D-E-F");
+        }
       },
       {
         id: "hard-seating-order",
@@ -1904,7 +1915,7 @@
       {
         id: "gauntlet-markov-two-step",
         category: "Reasoning and math",
-        title: "Two-step Markov probability",
+        title: "Three-step Markov probability",
         presets: suite("gauntlet"),
         prompt: "A Markov chain has states A, B, and C. From A: P(A)=1/2, P(B)=2/5, P(C)=1/10. From B: P(A)=1/5, P(B)=1/2, P(C)=3/10. From C: P(A)=1/4, P(B)=1/4, P(C)=1/2. Starting in A, what is the probability of being in B after exactly three transitions? Round half up to 4 decimals. Return only JSON: {\"answer\":<number>,\"confidence\":0-100}.",
         check: approxNumber(0.4095, 0.00005)
@@ -2158,7 +2169,7 @@
         category: "Multilingual control",
         title: "Portuguese with arithmetic",
         presets: suite("abyss"),
-        prompt: "Responda em portugues com exatamente duas palavras: resultado de 8*7-6, escrito por extenso. Return only JSON: {\"answer\":\"<duas palavras>\",\"confidence\":0-100}.",
+        prompt: "Responda em portugues, por extenso e sem digitos, com o resultado de 8*7-6. Return only JSON: {\"answer\":\"<palavras>\",\"confidence\":0-100}.",
         // Contract: 8*7-6 is 50, not 52. Accept cinquenta, cinco dezenas, or meia centena. cinquenta dois fails.
         check: ({ parsed, answer, raw }) => {
           const norm = looseNormalize(judgeText(parsed, answer, raw));
@@ -2861,6 +2872,7 @@
       try {
         await Promise.all(Array.from({ length: concurrency }, worker));
         const completedAt = new Date();
+        const stopped = activeAbort.signal.aborted;
         const summary = summarizeRun({
           model,
           preset: selectedPreset(),
@@ -2872,9 +2884,11 @@
           reasoning
         });
         lastRun = summary;
-        renderSummary(summary);
-        setStatus(activeAbort.signal.aborted ? "Stopped" : "Complete", activeAbort.signal.aborted ? "error" : "");
-        log(activeAbort.signal.aborted ? "Run stopped." : `Run complete: ${formatCount(summary.passed, summary.total)} passed.`);
+        renderSummary(summary, { save: !stopped, stopped });
+        setStatus(stopped ? "Stopped" : "Complete", stopped ? "error" : "");
+        log(stopped
+          ? "Run stopped. Partial results stay on screen and are not added to the local average."
+          : `Run complete: ${formatCount(summary.passed, summary.total)} passed.`);
       } finally {
         running = false;
         activeAbort = null;
@@ -3066,7 +3080,7 @@
       return `${text}/${total}`;
     }
 
-    function renderSummary(summary) {
+    function renderSummary(summary, options = {}) {
       els.overallScore.textContent = formatCount(summary.passed, summary.total);
       els.localAverageScore.textContent = Number.isFinite(summary.localAveragePassed)
         ? formatAverage(summary.localAveragePassed, summary.localAverageTotal)
@@ -3077,18 +3091,21 @@
       els.progressText.textContent = `${summary.model} | ${summary.preset} | ${Math.round(summary.avgLatency)} ms avg`;
       els.exportJson.disabled = false;
       els.copySummary.disabled = false;
-      renderCategories(summary);
-      renderNarrative(summary);
-      saveRunHistory(summary);
+      renderCategories(summary, options);
+      renderNarrative(summary, options);
+      if (options.save !== false) saveRunHistory(summary);
     }
 
-    function renderCategories(summary) {
+    function renderCategories(summary, options = {}) {
       els.categoryGrid.innerHTML = summary.categoryScores.map((item) => {
-        const cls = Number.isFinite(item.delta) && item.delta >= 1 ? "strong" : Number.isFinite(item.delta) && item.delta <= -1 ? "weak" : "";
+        const comparable = !options.stopped && Number.isFinite(item.delta);
+        const cls = comparable && item.delta >= 1 ? "strong" : comparable && item.delta <= -1 ? "weak" : "";
         const deltaLabel = `${item.delta >= 0 ? "+" : ""}${Math.round(item.delta * 10) / 10}`;
-        const comparisonText = Number.isFinite(item.delta)
+        const comparisonText = comparable
           ? `${deltaLabel} passed vs local avg | ${item.count} tasks`
-          : `${item.count} tasks | no local avg yet`;
+          : options.stopped
+            ? `${item.count} tasks | partial run`
+            : `${item.count} tasks | no local avg yet`;
         const rate = item.count ? item.passed / item.count * 100 : 0;
         return `
           <article class="category-card ${cls}">
@@ -3101,8 +3118,8 @@
       }).join("");
     }
 
-    function renderNarrative(summary) {
-      const hasLocalAverage = Number.isFinite(summary.localAveragePassed);
+    function renderNarrative(summary, options = {}) {
+      const hasLocalAverage = !options.stopped && Number.isFinite(summary.localAveragePassed);
       const delta = hasLocalAverage ? summary.passed - summary.localAveragePassed : null;
       const sorted = [...summary.categoryScores].sort((a, b) => {
         if (hasLocalAverage) return (b.delta ?? -999) - (a.delta ?? -999);
@@ -3117,13 +3134,15 @@
       const failed = summary.results.filter((item) => !item.passed).slice(0, 5);
       const deltaText = hasLocalAverage ? formatAverage(Math.abs(delta), summary.total).split("/")[0] : "";
 
-      const headline = hasLocalAverage
-        ? delta >= 1
-          ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} more than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
-          : delta <= -1
-            ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} fewer than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
-            : `This run passed ${formatCount(summary.passed, summary.total)}, close to your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
-        : `This run passed ${formatCount(summary.passed, summary.total)}. This is your first stored ${summary.preset} run, so there is no local average yet.`;
+      const headline = options.stopped
+        ? `Stopped early with ${formatCount(summary.passed, summary.total)} passed among the tasks that finished. This partial run is not stored.`
+        : hasLocalAverage
+          ? delta >= 1
+            ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} more than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
+            : delta <= -1
+              ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} fewer than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
+              : `This run passed ${formatCount(summary.passed, summary.total)}, close to your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
+          : `This run passed ${formatCount(summary.passed, summary.total)}. This is your first stored ${summary.preset} run, so there is no local average yet.`;
 
       const strengthsText = strengths.length
         ? strengths.map((item) => {
@@ -3192,8 +3211,12 @@
         `Average latency: ${Math.round(lastRun.avgLatency)} ms`,
         `Reasoning: ${lastRun.reasoning?.summary || "not recorded"}`
       ];
-      await navigator.clipboard.writeText(lines.join("\n"));
-      log("Summary copied.");
+      try {
+        await navigator.clipboard.writeText(lines.join("\n"));
+        log("Summary copied.");
+      } catch (error) {
+        log(error?.message ? `Copy failed: ${error.message}` : "Copy failed.");
+      }
     }
 
     function saveKeyPreference() {
@@ -3223,7 +3246,7 @@
       "hard-recurrence": { good: '{"answer":30752,"confidence":80}', bad: '{"answer":842,"confidence":80}', wrapped: "The answer is **30752**." },
       "hard-liars": { good: '{"answer":"C","confidence":80}', bad: '{"answer":"D","confidence":80}', wrapped: "The answer is **C**." },
       "hard-crt": { good: '{"answer":643,"confidence":80}', bad: '{"answer":49,"confidence":80}', wrapped: "The smallest value is **643**." },
-      "hard-shortest-constrained-path": { good: '{"answer":9,"path":"A-E-D-F","confidence":80}', bad: '{"answer":13,"path":"A-C-B-D-E-F","confidence":80}', wrapped: "The distance is **9**." },
+      "hard-shortest-constrained-path": { good: '{"answer":9,"path":"A-C-D-E-F","confidence":80}', bad: '{"answer":13,"path":"A-C-B-D-E-F","confidence":80}', wrapped: "The distance is **9**." },
       "hard-seating-order": { good: '{"answer":"JIFHGK","confidence":80}', bad: '{"answer":"JIFGHK","confidence":80}', wrapped: "Order: **J I F H G K**." },
       "hard-python-default-mutation": { good: '{"answer":"[0, 1] [0] [0, 1]","confidence":80}', bad: '{"answer":"[0] [0] [0, 1]","confidence":80}', wrapped: "It prints `[0, 1] [0] [0, 1]`." },
       "hard-js-microtasks": { good: '{"answer":["A","E","B","D","C"],"confidence":80}', bad: '{"answer":["A","B","C","D","E"],"confidence":80}', wrapped: "The order is A -> E -> B -> D -> C." },
@@ -3301,6 +3324,7 @@
 
     const extraCheckerCases = [
       ["hard-lock-code", '{"answer":"8357.","confidence":90}', true],
+      ["hard-shortest-constrained-path", '{"answer":9,"path":"A-E-D-F","confidence":80}', false],
       ["hard-bayes-two-tests", "79.61%", true],
       ["hard-bayes-two-tests", "59.26%", false],
       ["hard-recurrence", "a10 = 30752", true],
