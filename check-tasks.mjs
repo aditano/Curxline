@@ -1,3 +1,4 @@
+// Copyright 2026 Anthony DiTano. Licensed under GPL-3.0-or-later. See LICENSE.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
