@@ -596,7 +596,7 @@
       <p class="eyebrow">OpenRouter Model Lab</p>
       <h1>Adversarial model benchmark</h1>
     </div>
-    <div class="pill" id="statusPill">Idle</div>
+    <div class="pill" id="statusPill" aria-live="polite">Idle</div>
   </header>
 
   <main class="app-shell">
@@ -720,7 +720,7 @@
           </div>
           <span class="score-badge" id="taskCount">0 tasks</span>
         </div>
-        <div class="progress-shell" aria-label="Benchmark progress">
+        <div class="progress-shell" id="progressShell" role="progressbar" aria-label="Benchmark progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="progress-fill" id="progressFill"></div>
         </div>
       </section>
@@ -781,6 +781,7 @@
       grade: $("#grade"),
       cost: $("#cost"),
       progressText: $("#progressText"),
+      progressShell: $("#progressShell"),
       progressFill: $("#progressFill"),
       taskCount: $("#taskCount"),
       categoryGrid: $("#categoryGrid"),
@@ -893,16 +894,6 @@
 
     function clamp(value, min, max) {
       return Math.min(max, Math.max(min, value));
-    }
-
-    function includesAll(text, words) {
-      const norm = normalizeText(text);
-      return words.every((word) => norm.includes(normalizeText(word)));
-    }
-
-    function includesAny(text, words) {
-      const norm = normalizeText(text);
-      return words.some((word) => norm.includes(normalizeText(word)));
     }
 
     // Binary verdict only. Checkers never award partial credit.
@@ -3060,6 +3051,7 @@
     function updateProgress(completed, total, cost) {
       const progress = total ? completed / total * 100 : 0;
       els.progressFill.style.width = `${progress}%`;
+      if (els.progressShell) els.progressShell.setAttribute("aria-valuenow", String(Math.round(progress)));
       els.progressText.textContent = `${completed} of ${total} complete.`;
       els.cost.textContent = formatCost(cost);
     }
