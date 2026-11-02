@@ -14,7 +14,7 @@ There is no build step. From the repository root:
 python3 -m http.server 8080
 ```
 
-Open [http://localhost:8080/](http://localhost:8080/). Paste an OpenRouter API key in the page. The key is sent only to OpenRouter. "Remember locally" stores it in this browser's `localStorage`.
+Open [http://localhost:8080/](http://localhost:8080/). Paste an OpenRouter API key in the page. The key is sent only to OpenRouter. By default it stays in memory for the page. "Remember for this tab" stores it in namespaced `sessionStorage` for the current tab only, with an on-page warning that shared origins (including GitHub Pages under the same user site) can still expose session keys to other pages on that origin while the tab is open.
 
 Opening `index.html` as a file can block the model list request. Use the local server above when that happens.
 

@@ -610,10 +610,15 @@
         <div class="key-options">
           <label class="checkbox-line">
             <input id="rememberKey" type="checkbox">
-            Remember locally
+            Remember for this tab
           </label>
           <button class="btn secondary small" id="toggleKey" type="button">Show</button>
         </div>
+        <p class="model-note" id="rememberKeyNote" hidden>
+          Stores the key in this browser tab's sessionStorage under a Curxline-only name.
+          On shared hosts such as aditano.github.io, other pages on the same origin can still
+          read sessionStorage while this tab is open. Leave unchecked to keep the key in memory only.
+        </p>
         <div class="field">
           <label for="modelSearch">Model Search</label>
           <input id="modelSearch" type="search" placeholder="openai, anthropic, google...">
@@ -753,6 +758,7 @@
     const els = {
       apiKey: $("#apiKey"),
       rememberKey: $("#rememberKey"),
+      rememberKeyNote: $("#rememberKeyNote"),
       toggleKey: $("#toggleKey"),
       modelSearch: $("#modelSearch"),
       modelSelect: $("#modelSelect"),
@@ -3285,21 +3291,55 @@
       }
     }
 
-    function saveKeyPreference() {
-      if (els.rememberKey.checked) {
-        localStorage.setItem("openrouter_model_lab_key", els.apiKey.value);
-      } else {
-        localStorage.removeItem("openrouter_model_lab_key");
+    const KEY_STORAGE_NS = "curxline:openrouter_api_key";
+    const KEY_REMEMBER_NS = "curxline:remember_key";
+    const LEGACY_KEY_STORAGE = "openrouter_model_lab_key";
+    const LEGACY_KEY_REMEMBER = "openrouter_model_lab_remember";
+
+    function clearLegacyKeyStorage() {
+      try {
+        localStorage.removeItem(LEGACY_KEY_STORAGE);
+        localStorage.removeItem(LEGACY_KEY_REMEMBER);
+      } catch {
+        // Ignore quota / privacy-mode failures while scrubbing the old shared-origin key.
       }
-      localStorage.setItem("openrouter_model_lab_remember", els.rememberKey.checked ? "1" : "0");
+    }
+
+    function updateRememberKeyWarning() {
+      if (!els.rememberKeyNote) return;
+      els.rememberKeyNote.hidden = !els.rememberKey.checked;
+    }
+
+    function saveKeyPreference() {
+      clearLegacyKeyStorage();
+      updateRememberKeyWarning();
+      try {
+        if (els.rememberKey.checked) {
+          sessionStorage.setItem(KEY_STORAGE_NS, els.apiKey.value);
+          sessionStorage.setItem(KEY_REMEMBER_NS, "1");
+        } else {
+          sessionStorage.removeItem(KEY_STORAGE_NS);
+          sessionStorage.removeItem(KEY_REMEMBER_NS);
+        }
+      } catch {
+        log("Could not update session key preference in this browser.");
+      }
     }
 
     function restorePreferences() {
-      const remember = localStorage.getItem("openrouter_model_lab_remember") === "1";
-      els.rememberKey.checked = remember;
-      if (remember) {
-        els.apiKey.value = localStorage.getItem("openrouter_model_lab_key") || "";
+      clearLegacyKeyStorage();
+      let remember = false;
+      let storedKey = "";
+      try {
+        remember = sessionStorage.getItem(KEY_REMEMBER_NS) === "1";
+        storedKey = remember ? (sessionStorage.getItem(KEY_STORAGE_NS) || "") : "";
+      } catch {
+        remember = false;
+        storedKey = "";
       }
+      els.rememberKey.checked = remember;
+      if (remember) els.apiKey.value = storedKey;
+      updateRememberKeyWarning();
       els.taskCount.textContent = `${selectedTasks().length} tasks`;
       const storedEffort = localStorage.getItem(REASONING_EFFORT_KEY);
       if (storedEffort) els.reasoningEffort.dataset.stored = storedEffort;
