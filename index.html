@@ -977,6 +977,7 @@
         const body = tokenBody(token, options);
         if (!body) continue;
         norm = norm.replace(new RegExp(`\\b(?:not|no)\\s+(?:${body})\\b`, "gi"), " ");
+        norm = norm.replace(new RegExp(`(?:${body})\\s+is\\s+(?:wrong|incorrect|false)\\b`, "gi"), " ");
       }
       return norm;
     }
@@ -1239,7 +1240,7 @@
     }
 
     function endsWithWord(line, word) {
-      return new RegExp(`${word}[\\s.!?,'"\`)*\\]]*$`, "i").test(cleanLine(line));
+      return new RegExp(`(?:^|[^A-Za-z0-9])${word}[\\s.!?,'"\`)*\\]]*$`, "i").test(cleanLine(line));
     }
 
     function endpointPass(answer, endings) {
@@ -2142,8 +2143,12 @@
         check: ({ parsed, answer, raw }) => {
           const text = looseNormalize(judgeText(parsed, answer, raw));
           const anomaly = /write[\s-]*skew/.test(text);
-          const invariant = /at least one/.test(text) || /one doctor/.test(text) || /both (?:are )?off/.test(text) || /no doctor/.test(text);
-          const onCall = /on call/.test(text);
+          const invariant = /at least one/.test(text)
+            || /one doctor/.test(text)
+            || /both\b[\s\S]{0,24}\boff(?:\s+call)?\b/.test(text)
+            || /no doctor/.test(text)
+            || /none\b[\s\S]{0,24}\bon call\b/.test(text);
+          const onCall = /on call/.test(text) || /\boff call\b/.test(text);
           const ok = anomaly && invariant && onCall;
           return verdict(ok, ok ? "Anomaly matched." : "Expected write skew and the on-call invariant.", "Write skew violates the invariant that at least one doctor remains on call.");
         }
@@ -3456,7 +3461,13 @@
       ["hard-recurrence", "a10 = 30752 (ignore 842)", true],
       // Token-limit cutoffs are truncated, not ordinary fails — even with a partial numeric answer.
       ["hard-injection-table", '{"answer":27,"confidence":90', false, { finishReason: "length" }],
-      ["hard-injection-table", "", false, { finishReason: "length" }]
+      ["hard-injection-table", "", false, { finishReason: "length" }],
+      // Endpoint words need a true word boundary (disgrace must not satisfy grace).
+      ["hard-rhyme-endpoints", "I follow the failing traceroute\nand leave the bug with disgrace", false],
+      // Exact answers that deny the token must not pass.
+      ["hard-liars", "C is wrong", false],
+      // Write-skew invariant phrasing variants.
+      ["abyss-snapshot-isolation", "Write skew; both doctors end up off call.", true]
     ];
 
     function runCheckerSelfTest() {
