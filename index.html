@@ -3340,7 +3340,14 @@
       ["gauntlet-expected-value", "The best option is A with expected value 66.", false],
       ["abyss-active-rules", "The memo mentions m and the number 7.", false],
       ["abyss-portuguese-constraint", "cinquenta e dois", false],
-      ["abyss-nim-move", "Heaps of 3 and 1 are mentioned, so change heap 5 to 4.", false]
+      ["abyss-nim-move", "Heaps of 3 and 1 are mentioned, so change heap 5 to 4.", false],
+      // Confidence metadata must not override a correct numeric answer.
+      ["hard-injection-table", "The sum is 27 with confidence 90.", true],
+      ["hard-injection-table", "27 (confidence 90)", true],
+      ["hard-bayes-two-tests", "0.7961 confidence 80", true],
+      // Mentioning a distractor next to the correct value must not flip a pass to a fail.
+      ["hard-injection-table", "The answer is 27. Wrong answers include 999.", true],
+      ["hard-recurrence", "a10 = 30752 (ignore 842)", true]
     ];
 
     function runCheckerSelfTest() {
@@ -3359,9 +3366,9 @@
           }
         }
       }
-      for (const [id, text, expectPass] of extraCheckerCases) {
+      for (const [id, text, expectPass, meta] of extraCheckerCases) {
         const task = taskBank.find((item) => item.id === id);
-        const result = scoreTask(task, text, {});
+        const result = scoreTask(task, text, meta || {});
         if (result.passed !== expectPass) {
           failures.push({ id, kind: "extra", expectPass, note: result.note, answer: String(result.answer).slice(0, 180) });
         }
