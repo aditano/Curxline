@@ -1013,14 +1013,21 @@
       return Number.isFinite(value) && Math.abs(value - expected) <= tolerance + 1e-9;
     }
 
+    function stripConfidenceNoise(text) {
+      return String(text ?? "")
+        .replace(/["']?confidence["']?\s*[:=]\s*[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)/gi, " ")
+        .replace(/\(\s*confidence\s+[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)\s*\)/gi, " ")
+        .replace(/\bconfidence\b(?:\s+of)?\s+[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)/gi, " ");
+    }
+
     function chooseNumber(source, expected, tolerance) {
-      const text = String(source ?? "").trim();
+      const text = stripConfidenceNoise(String(source ?? "").trim());
       const naked = text.replace(/^[*_`"'(\[]+|[.!?)*_`"'\]]+$/g, "").trim();
       if (/^[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?$/i.test(naked)) {
         const value = parseNumericToken(naked);
         if (Number.isFinite(value)) return value;
       }
-      const labelRe = /(?:answer|result|count|total|probability|posterior|value|quota|equals|distance|remainder|cost)\s*(?:=|is|:)?\s*([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?)/gi;
+      const labelRe = /(?:answer|result|count|total|probability|posterior|value|quota|equals|distance|remainder|cost|sum)\s*(?:=|is|:)?\s*([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?)/gi;
       let labeled = null;
       let labelMatch;
       const softened = softenContractions(text);
@@ -1029,7 +1036,7 @@
         if (Number.isFinite(value)) labeled = value;
       }
       if (Number.isFinite(labeled)) return labeled;
-      const re = /(?<![A-Za-z0-9.])(?:(not)\s+)?([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+))(\s*(?:%|percent))?/gi;
+      const re = /(?<![A-Za-z0-9.])(?:(not|ignore)\s+)?([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+))(\s*(?:%|percent))?/gi;
       const tokens = [];
       let match;
       while ((match = re.exec(softened))) {
@@ -1040,8 +1047,10 @@
       if (!tokens.length) return NaN;
       const matching = tokens.filter((value) => within(value, expected, tolerance));
       const others = tokens.filter((value) => !within(value, expected, tolerance));
-      if (matching.length && !others.length) return matching[matching.length - 1];
-      if (/\bor\b/i.test(text)) return NaN;
+      // Ambiguous alternates ("27 or 999") stay unresolved. Otherwise prefer a matching answer
+      // over trailing confidence metadata or distractors mentioned beside the correct value.
+      if (/\bor\b/i.test(text) && matching.length && others.length) return NaN;
+      if (matching.length) return matching[matching.length - 1];
       return tokens[tokens.length - 1];
     }
 
