@@ -2343,7 +2343,7 @@
 
     function renderModels() {
       const q = normalizeText(els.modelSearch.value);
-      const selected = els.modelSelect.value;
+      const selected = els.modelSelect.value || selectedModelId();
       const filtered = models
         .filter((model) => {
           const modality = model.architecture?.modality || "";
@@ -2354,6 +2354,12 @@
           return normalizeText(`${model.id} ${model.name} ${model.description}`).includes(q);
         })
         .slice(0, 300);
+
+      // Keep the current selection visible even when it falls outside the 300-cap slice.
+      if (selected && !filtered.some((model) => model.id === selected)) {
+        const selectedModel = models.find((model) => model.id === selected);
+        if (selectedModel) filtered.unshift(selectedModel);
+      }
 
       els.modelSelect.innerHTML = filtered.length
         ? `<option value="">Select a model</option>${filtered.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(modelLabel(model))}</option>`).join("")}`
@@ -2965,6 +2971,18 @@
       els.clearRun.disabled = isRunning;
       els.exportJson.disabled = isRunning || !lastRun;
       els.copySummary.disabled = isRunning || !lastRun;
+      const freezeIds = [
+        "apiKey", "rememberKey", "toggleKey", "modelSearch", "modelSelect", "manualModel",
+        "temperature", "maxTokens", "reasoningEffort", "concurrency"
+      ];
+      for (const id of freezeIds) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = isRunning;
+      }
+      document.querySelectorAll("input[name='preset']").forEach((input) => {
+        input.disabled = isRunning;
+      });
+      if (!isRunning) renderReasoningControl();
     }
 
     function resetResults() {
@@ -3057,8 +3075,12 @@
       }
     }
 
-    function localAverageFor(preset) {
-      const runs = getRunHistory().filter((run) => run.preset === preset && Number.isFinite(run.passed) && Number.isFinite(run.total) && run.total > 0);
+    function localAverageFor(preset, model) {
+      const runs = getRunHistory().filter((run) => {
+        if (run.preset !== preset) return false;
+        if (model && run.model && run.model !== model) return false;
+        return Number.isFinite(run.passed) && Number.isFinite(run.total) && run.total > 0;
+      });
       if (!runs.length) return null;
       const passed = runs.reduce((sum, run) => sum + run.passed, 0) / runs.length;
       const total = runs[runs.length - 1].total;
@@ -3096,7 +3118,7 @@
       const passed = run.results.filter((item) => item.passed).length;
       const truncated = run.results.filter((item) => item.truncated).length;
       const failed = run.results.filter((item) => !item.passed && !item.truncated).length;
-      const localAverage = localAverageFor(run.preset);
+      const localAverage = localAverageFor(run.preset, run.model);
       const categoryScores = categories.map((category) => {
         const items = run.results.filter((item) => item.category === category);
         const categoryPassed = items.filter((item) => item.passed).length;
@@ -3243,7 +3265,7 @@
       els.narrativePanel.innerHTML = `
         <h2>Result</h2>
         <div class="callout">${escapeHtml(headline)}</div>
-        <div class="callout note">Comparison is based only on binary pass/fail runs stored locally in this browser. It is not a live leaderboard.</div>
+        <div class="callout note">Comparison uses prior binary pass/fail runs for this same model and preset stored locally in this browser. It is not a live leaderboard.</div>
         <p><b>Strong spots:</b> ${escapeHtml(strengthsText)}</p>
         <p><b>Weak spots:</b> ${escapeHtml(weaknessesText)}</p>
         <p><b>Failed tasks:</b> ${escapeHtml(failedText)}</p>
