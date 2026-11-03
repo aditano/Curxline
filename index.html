@@ -500,6 +500,11 @@
       color: var(--danger);
     }
 
+    .score-badge.truncated {
+      background: rgba(188, 135, 43, 0.16);
+      color: #8a6418;
+    }
+
     details {
       border-top: 1px solid var(--line);
       padding-top: 8px;
@@ -591,7 +596,7 @@
       <p class="eyebrow">OpenRouter Model Lab</p>
       <h1>Adversarial model benchmark</h1>
     </div>
-    <div class="pill" id="statusPill">Idle</div>
+    <div class="pill" id="statusPill" aria-live="polite">Idle</div>
   </header>
 
   <main class="app-shell">
@@ -605,10 +610,15 @@
         <div class="key-options">
           <label class="checkbox-line">
             <input id="rememberKey" type="checkbox">
-            Remember locally
+            Remember for this tab
           </label>
           <button class="btn secondary small" id="toggleKey" type="button">Show</button>
         </div>
+        <p class="model-note" id="rememberKeyNote" hidden>
+          Stores the key in this browser tab's sessionStorage under a Curxline-only name.
+          On shared hosts such as aditano.github.io, other pages on the same origin can still
+          read sessionStorage while this tab is open. Leave unchecked to keep the key in memory only.
+        </p>
         <div class="field">
           <label for="modelSearch">Model Search</label>
           <input id="modelSearch" type="search" placeholder="openai, anthropic, google...">
@@ -710,7 +720,7 @@
           </div>
           <span class="score-badge" id="taskCount">0 tasks</span>
         </div>
-        <div class="progress-shell" aria-label="Benchmark progress">
+        <div class="progress-shell" id="progressShell" role="progressbar" aria-label="Benchmark progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="progress-fill" id="progressFill"></div>
         </div>
       </section>
@@ -748,6 +758,7 @@
     const els = {
       apiKey: $("#apiKey"),
       rememberKey: $("#rememberKey"),
+      rememberKeyNote: $("#rememberKeyNote"),
       toggleKey: $("#toggleKey"),
       modelSearch: $("#modelSearch"),
       modelSelect: $("#modelSelect"),
@@ -770,6 +781,7 @@
       grade: $("#grade"),
       cost: $("#cost"),
       progressText: $("#progressText"),
+      progressShell: $("#progressShell"),
       progressFill: $("#progressFill"),
       taskCount: $("#taskCount"),
       categoryGrid: $("#categoryGrid"),
@@ -884,16 +896,6 @@
       return Math.min(max, Math.max(min, value));
     }
 
-    function includesAll(text, words) {
-      const norm = normalizeText(text);
-      return words.every((word) => norm.includes(normalizeText(word)));
-    }
-
-    function includesAny(text, words) {
-      const norm = normalizeText(text);
-      return words.some((word) => norm.includes(normalizeText(word)));
-    }
-
     // Binary verdict only. Checkers never award partial credit.
     function verdict(pass, note, expected) {
       return { pass: pass === true, note, expected };
@@ -966,6 +968,7 @@
         const body = tokenBody(token, options);
         if (!body) continue;
         norm = norm.replace(new RegExp(`\\b(?:not|no)\\s+(?:${body})\\b`, "gi"), " ");
+        norm = norm.replace(new RegExp(`(?:${body})\\s+is\\s+(?:wrong|incorrect|false)\\b`, "gi"), " ");
       }
       return norm;
     }
@@ -1013,14 +1016,21 @@
       return Number.isFinite(value) && Math.abs(value - expected) <= tolerance + 1e-9;
     }
 
+    function stripConfidenceNoise(text) {
+      return String(text ?? "")
+        .replace(/["']?confidence["']?\s*[:=]\s*[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)/gi, " ")
+        .replace(/\(\s*confidence\s+[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)\s*\)/gi, " ")
+        .replace(/\bconfidence\b(?:\s+of)?\s+[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)/gi, " ");
+    }
+
     function chooseNumber(source, expected, tolerance) {
-      const text = String(source ?? "").trim();
+      const text = stripConfidenceNoise(String(source ?? "").trim());
       const naked = text.replace(/^[*_`"'(\[]+|[.!?)*_`"'\]]+$/g, "").trim();
       if (/^[+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?$/i.test(naked)) {
         const value = parseNumericToken(naked);
         if (Number.isFinite(value)) return value;
       }
-      const labelRe = /(?:answer|result|count|total|probability|posterior|value|quota|equals|distance|remainder|cost)\s*(?:=|is|:)?\s*([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?)/gi;
+      const labelRe = /(?:answer|result|count|total|probability|posterior|value|quota|equals|distance|remainder|cost|sum)\s*(?:=|is|:)?\s*([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+)(?:\s*(?:%|percent))?)/gi;
       let labeled = null;
       let labelMatch;
       const softened = softenContractions(text);
@@ -1029,7 +1039,7 @@
         if (Number.isFinite(value)) labeled = value;
       }
       if (Number.isFinite(labeled)) return labeled;
-      const re = /(?<![A-Za-z0-9.])(?:(not)\s+)?([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+))(\s*(?:%|percent))?/gi;
+      const re = /(?<![A-Za-z0-9.])(?:(not|ignore)\s+)?([+-]?(?:\d+\s*\/\s*\d+|\d*\.\d+|\d+))(\s*(?:%|percent))?/gi;
       const tokens = [];
       let match;
       while ((match = re.exec(softened))) {
@@ -1040,8 +1050,10 @@
       if (!tokens.length) return NaN;
       const matching = tokens.filter((value) => within(value, expected, tolerance));
       const others = tokens.filter((value) => !within(value, expected, tolerance));
-      if (matching.length && !others.length) return matching[matching.length - 1];
-      if (/\bor\b/i.test(text)) return NaN;
+      // Ambiguous alternates ("27 or 999") stay unresolved. Otherwise prefer a matching answer
+      // over trailing confidence metadata or distractors mentioned beside the correct value.
+      if (/\bor\b/i.test(text) && matching.length && others.length) return NaN;
+      if (matching.length) return matching[matching.length - 1];
       return tokens[tokens.length - 1];
     }
 
@@ -1219,7 +1231,7 @@
     }
 
     function endsWithWord(line, word) {
-      return new RegExp(`${word}[\\s.!?,'"\`)*\\]]*$`, "i").test(cleanLine(line));
+      return new RegExp(`(?:^|[^A-Za-z0-9])${word}[\\s.!?,'"\`)*\\]]*$`, "i").test(cleanLine(line));
     }
 
     function endpointPass(answer, endings) {
@@ -2122,8 +2134,12 @@
         check: ({ parsed, answer, raw }) => {
           const text = looseNormalize(judgeText(parsed, answer, raw));
           const anomaly = /write[\s-]*skew/.test(text);
-          const invariant = /at least one/.test(text) || /one doctor/.test(text) || /both (?:are )?off/.test(text) || /no doctor/.test(text);
-          const onCall = /on call/.test(text);
+          const invariant = /at least one/.test(text)
+            || /one doctor/.test(text)
+            || /both\b[\s\S]{0,24}\boff(?:\s+call)?\b/.test(text)
+            || /no doctor/.test(text)
+            || /none\b[\s\S]{0,24}\bon call\b/.test(text);
+          const onCall = /on call/.test(text) || /\boff call\b/.test(text);
           const ok = anomaly && invariant && onCall;
           return verdict(ok, ok ? "Anomaly matched." : "Expected write skew and the on-call invariant.", "Write skew violates the invariant that at least one doctor remains on call.");
         }
@@ -2318,7 +2334,7 @@
 
     function renderModels() {
       const q = normalizeText(els.modelSearch.value);
-      const selected = els.modelSelect.value;
+      const selected = els.modelSelect.value || selectedModelId();
       const filtered = models
         .filter((model) => {
           const modality = model.architecture?.modality || "";
@@ -2329,6 +2345,12 @@
           return normalizeText(`${model.id} ${model.name} ${model.description}`).includes(q);
         })
         .slice(0, 300);
+
+      // Keep the current selection visible even when it falls outside the 300-cap slice.
+      if (selected && !filtered.some((model) => model.id === selected)) {
+        const selectedModel = models.find((model) => model.id === selected);
+        if (selectedModel) filtered.unshift(selectedModel);
+      }
 
       els.modelSelect.innerHTML = filtered.length
         ? `<option value="">Select a model</option>${filtered.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(modelLabel(model))}</option>`).join("")}`
@@ -2398,7 +2420,38 @@
       }
     }
 
+    function isTruncatedReply(meta = {}) {
+      if (meta.truncated === true) return true;
+      const reason = String(meta.finishReason || meta.finish_reason || "").toLowerCase();
+      return reason === "length" || reason === "max_tokens";
+    }
+
     function scoreTask(task, raw, meta = {}) {
+      const truncated = isTruncatedReply(meta);
+      if (truncated) {
+        const parsed = task.requiresJson === false ? null : parseMaybeJson(raw);
+        const answer = task.requiresJson === false ? raw : answerText(parsed, raw);
+        return {
+          taskId: task.id,
+          title: task.title,
+          category: task.category,
+          prompt: task.prompt,
+          passed: false,
+          truncated: true,
+          expected: "A complete reply within the token limit.",
+          note: String(raw || "").trim()
+            ? "Reply truncated by the token limit before scoring."
+            : "Reply empty after the token limit; reasoning or output was cut off.",
+          parsedOk: task.requiresJson === false ? true : Boolean(parsed),
+          answer,
+          raw,
+          usage: meta.usage || null,
+          latencyMs: meta.latencyMs || 0,
+          error: meta.error || null,
+          finishReason: meta.finishReason || meta.finish_reason || "length"
+        };
+      }
+
       const parsed = task.requiresJson === false ? null : parseMaybeJson(raw);
       const answer = task.requiresJson === false ? raw : answerText(parsed, raw);
       let scored;
@@ -2415,6 +2468,7 @@
         category: task.category,
         prompt: task.prompt,
         passed,
+        truncated: false,
         expected: scored.expected,
         note: scored.note,
         parsedOk: task.requiresJson === false ? true : Boolean(parsed),
@@ -2422,7 +2476,8 @@
         raw,
         usage: meta.usage || null,
         latencyMs: meta.latencyMs || 0,
-        error: meta.error || null
+        error: meta.error || null,
+        finishReason: meta.finishReason || meta.finish_reason || null
       };
     }
 
@@ -2801,8 +2856,12 @@
         throw error;
       }
       const data = await res.json();
-      const content = data.choices?.[0]?.message?.content ?? "";
-      return { content, usage: data.usage || null, latencyMs };
+      const choice = data.choices?.[0] || {};
+      const content = choice.message?.content ?? "";
+      const finishReason = choice.finish_reason || choice.native_finish_reason || null;
+      const truncated = String(finishReason || "").toLowerCase() === "length"
+        || String(finishReason || "").toLowerCase() === "max_tokens";
+      return { content, usage: data.usage || null, latencyMs, finishReason, truncated };
     }
 
     async function runBenchmark() {
@@ -2852,7 +2911,7 @@
             completed += 1;
             updateTaskResult(result);
             updateProgress(completed, tasks.length, totalCost);
-            log(`Scored ${task.title}: ${result.passed ? "Pass" : "Fail"}.`);
+            log(`Scored ${task.title}: ${result.passed ? "Pass" : result.truncated ? "Truncated" : "Fail"}.`);
           } catch (error) {
             const result = scoreTask(task, "", { error: error.message, latencyMs: 0 });
             results.push(result);
@@ -2903,6 +2962,18 @@
       els.clearRun.disabled = isRunning;
       els.exportJson.disabled = isRunning || !lastRun;
       els.copySummary.disabled = isRunning || !lastRun;
+      const freezeIds = [
+        "apiKey", "rememberKey", "toggleKey", "modelSearch", "modelSelect", "manualModel",
+        "temperature", "maxTokens", "reasoningEffort", "concurrency"
+      ];
+      for (const id of freezeIds) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = isRunning;
+      }
+      document.querySelectorAll("input[name='preset']").forEach((input) => {
+        input.disabled = isRunning;
+      });
+      if (!isRunning) renderReasoningControl();
     }
 
     function resetResults() {
@@ -2948,8 +3019,8 @@
     function updateTaskResult(result) {
       const card = els.taskList.querySelector(`[data-task="${CSS.escape(result.taskId)}"]`);
       if (!card) return;
-      const badgeClass = result.passed ? "pass" : "fail";
-      const badgeText = result.passed ? "Pass" : "Fail";
+      const badgeClass = result.passed ? "pass" : result.truncated ? "truncated" : "fail";
+      const badgeText = result.passed ? "Pass" : result.truncated ? "Truncated" : "Fail";
       card.innerHTML = `
         <div class="task-head">
           <div class="task-title">
@@ -2958,7 +3029,7 @@
           </div>
           <span class="score-badge ${badgeClass}">${badgeText}</span>
         </div>
-        <p>${escapeHtml(result.note || "")} ${result.parsedOk ? "" : "JSON format missed."}</p>
+        <p>${escapeHtml(result.note || "")} ${result.parsedOk || result.truncated ? "" : "JSON format missed."}</p>
         ${result.error ? `<div class="callout bad">${escapeHtml(result.error)}</div>` : ""}
         <details>
           <summary>Question Asked</summary>
@@ -2972,6 +3043,7 @@
           <summary>Scoring Details</summary>
           <p><b>Expected:</b> ${escapeHtml(result.expected || "")}</p>
           <p><b>Answer:</b> ${escapeHtml(result.answer || "")}</p>
+          ${result.truncated ? `<p><b>Finish reason:</b> ${escapeHtml(result.finishReason || "length")}</p>` : ""}
         </details>
       `;
     }
@@ -2979,6 +3051,7 @@
     function updateProgress(completed, total, cost) {
       const progress = total ? completed / total * 100 : 0;
       els.progressFill.style.width = `${progress}%`;
+      if (els.progressShell) els.progressShell.setAttribute("aria-valuenow", String(Math.round(progress)));
       els.progressText.textContent = `${completed} of ${total} complete.`;
       els.cost.textContent = formatCost(cost);
     }
@@ -2994,8 +3067,12 @@
       }
     }
 
-    function localAverageFor(preset) {
-      const runs = getRunHistory().filter((run) => run.preset === preset && Number.isFinite(run.passed) && Number.isFinite(run.total) && run.total > 0);
+    function localAverageFor(preset, model) {
+      const runs = getRunHistory().filter((run) => {
+        if (run.preset !== preset) return false;
+        if (model && run.model && run.model !== model) return false;
+        return Number.isFinite(run.passed) && Number.isFinite(run.total) && run.total > 0;
+      });
       if (!runs.length) return null;
       const passed = runs.reduce((sum, run) => sum + run.passed, 0) / runs.length;
       const total = runs[runs.length - 1].total;
@@ -3031,7 +3108,9 @@
     function summarizeRun(run) {
       const total = run.results.length;
       const passed = run.results.filter((item) => item.passed).length;
-      const localAverage = localAverageFor(run.preset);
+      const truncated = run.results.filter((item) => item.truncated).length;
+      const failed = run.results.filter((item) => !item.passed && !item.truncated).length;
+      const localAverage = localAverageFor(run.preset, run.model);
       const categoryScores = categories.map((category) => {
         const items = run.results.filter((item) => item.category === category);
         const categoryPassed = items.filter((item) => item.passed).length;
@@ -3052,6 +3131,8 @@
       return {
         ...run,
         passed,
+        failed,
+        truncated,
         total,
         passRate,
         localAveragePassed: localAverage?.passed ?? null,
@@ -3131,18 +3212,22 @@
       const weaknesses = hasLocalAverage
         ? sorted.filter((item) => Number.isFinite(item.delta) && item.delta <= -1).slice(-3).reverse()
         : [...summary.categoryScores].sort((a, b) => a.passed / a.count - b.passed / b.count).slice(0, 3);
-      const failed = summary.results.filter((item) => !item.passed).slice(0, 5);
+      const failed = summary.results.filter((item) => !item.passed && !item.truncated).slice(0, 5);
+      const truncated = summary.results.filter((item) => item.truncated).slice(0, 5);
       const deltaText = hasLocalAverage ? formatAverage(Math.abs(delta), summary.total).split("/")[0] : "";
+      const truncatedNote = summary.truncated
+        ? ` ${summary.truncated} truncated by the token limit.`
+        : "";
 
       const headline = options.stopped
-        ? `Stopped early with ${formatCount(summary.passed, summary.total)} passed among the tasks that finished. This partial run is not stored.`
+        ? `Stopped early with ${formatCount(summary.passed, summary.total)} passed among the tasks that finished.${truncatedNote} This partial run is not stored.`
         : hasLocalAverage
           ? delta >= 1
-            ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} more than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
+            ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} more than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.${truncatedNote}`
             : delta <= -1
-              ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} fewer than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
-              : `This run passed ${formatCount(summary.passed, summary.total)}, close to your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.`
-          : `This run passed ${formatCount(summary.passed, summary.total)}. This is your first stored ${summary.preset} run, so there is no local average yet.`;
+              ? `This run passed ${formatCount(summary.passed, summary.total)}, ${deltaText} fewer than your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.${truncatedNote}`
+              : `This run passed ${formatCount(summary.passed, summary.total)}, close to your local average of ${formatAverage(summary.localAveragePassed, summary.localAverageTotal)} across ${summary.localAverageCount} prior run${summary.localAverageCount === 1 ? "" : "s"}.${truncatedNote}`
+          : `This run passed ${formatCount(summary.passed, summary.total)}.${truncatedNote} This is your first stored ${summary.preset} run, so there is no local average yet.`;
 
       const strengthsText = strengths.length
         ? strengths.map((item) => {
@@ -3161,6 +3246,9 @@
       const failedText = failed.length
         ? failed.map((item) => `${item.title}: Fail`).join("; ")
         : "No failed tasks.";
+      const truncatedText = truncated.length
+        ? truncated.map((item) => `${item.title}: Truncated`).join("; ")
+        : summary.truncated ? `${summary.truncated} truncated task(s).` : "No truncated tasks.";
 
       const costLine = summary.totalCost > 0
         ? `${formatCost(summary.totalCost)} reported cost, ${summary.totalTokens.toLocaleString()} tokens, ${Math.round(summary.avgLatency)} ms average latency.`
@@ -3169,10 +3257,11 @@
       els.narrativePanel.innerHTML = `
         <h2>Result</h2>
         <div class="callout">${escapeHtml(headline)}</div>
-        <div class="callout note">Comparison is based only on binary pass/fail runs stored locally in this browser. It is not a live leaderboard.</div>
+        <div class="callout note">Comparison uses prior binary pass/fail runs for this same model and preset stored locally in this browser. It is not a live leaderboard.</div>
         <p><b>Strong spots:</b> ${escapeHtml(strengthsText)}</p>
         <p><b>Weak spots:</b> ${escapeHtml(weaknessesText)}</p>
         <p><b>Failed tasks:</b> ${escapeHtml(failedText)}</p>
+        <p><b>Truncated tasks:</b> ${escapeHtml(truncatedText)}</p>
         <p><b>Run shape:</b> JSON parsed ${formatCount(summary.jsonParsed, summary.total)}, ${escapeHtml(costLine)}</p>
       `;
     }
@@ -3206,6 +3295,8 @@
         `Model: ${lastRun.model}`,
         `Preset: ${lastRun.preset}`,
         `Passed: ${formatCount(lastRun.passed, lastRun.total)} (${lastRun.grade})`,
+        `Failed: ${lastRun.failed ?? lastRun.total - lastRun.passed - (lastRun.truncated || 0)}`,
+        `Truncated: ${lastRun.truncated || 0}`,
         `Local average: ${Number.isFinite(lastRun.localAveragePassed) ? `${formatAverage(lastRun.localAveragePassed, lastRun.localAverageTotal)} across ${lastRun.localAverageCount} prior run(s)` : "not available yet"}`,
         `JSON parsed: ${formatCount(lastRun.jsonParsed, lastRun.total)}`,
         `Average latency: ${Math.round(lastRun.avgLatency)} ms`,
@@ -3219,21 +3310,55 @@
       }
     }
 
-    function saveKeyPreference() {
-      if (els.rememberKey.checked) {
-        localStorage.setItem("openrouter_model_lab_key", els.apiKey.value);
-      } else {
-        localStorage.removeItem("openrouter_model_lab_key");
+    const KEY_STORAGE_NS = "curxline:openrouter_api_key";
+    const KEY_REMEMBER_NS = "curxline:remember_key";
+    const LEGACY_KEY_STORAGE = "openrouter_model_lab_key";
+    const LEGACY_KEY_REMEMBER = "openrouter_model_lab_remember";
+
+    function clearLegacyKeyStorage() {
+      try {
+        localStorage.removeItem(LEGACY_KEY_STORAGE);
+        localStorage.removeItem(LEGACY_KEY_REMEMBER);
+      } catch {
+        // Ignore quota / privacy-mode failures while scrubbing the old shared-origin key.
       }
-      localStorage.setItem("openrouter_model_lab_remember", els.rememberKey.checked ? "1" : "0");
+    }
+
+    function updateRememberKeyWarning() {
+      if (!els.rememberKeyNote) return;
+      els.rememberKeyNote.hidden = !els.rememberKey.checked;
+    }
+
+    function saveKeyPreference() {
+      clearLegacyKeyStorage();
+      updateRememberKeyWarning();
+      try {
+        if (els.rememberKey.checked) {
+          sessionStorage.setItem(KEY_STORAGE_NS, els.apiKey.value);
+          sessionStorage.setItem(KEY_REMEMBER_NS, "1");
+        } else {
+          sessionStorage.removeItem(KEY_STORAGE_NS);
+          sessionStorage.removeItem(KEY_REMEMBER_NS);
+        }
+      } catch {
+        log("Could not update session key preference in this browser.");
+      }
     }
 
     function restorePreferences() {
-      const remember = localStorage.getItem("openrouter_model_lab_remember") === "1";
-      els.rememberKey.checked = remember;
-      if (remember) {
-        els.apiKey.value = localStorage.getItem("openrouter_model_lab_key") || "";
+      clearLegacyKeyStorage();
+      let remember = false;
+      let storedKey = "";
+      try {
+        remember = sessionStorage.getItem(KEY_REMEMBER_NS) === "1";
+        storedKey = remember ? (sessionStorage.getItem(KEY_STORAGE_NS) || "") : "";
+      } catch {
+        remember = false;
+        storedKey = "";
       }
+      els.rememberKey.checked = remember;
+      if (remember) els.apiKey.value = storedKey;
+      updateRememberKeyWarning();
       els.taskCount.textContent = `${selectedTasks().length} tasks`;
       const storedEffort = localStorage.getItem(REASONING_EFFORT_KEY);
       if (storedEffort) els.reasoningEffort.dataset.stored = storedEffort;
@@ -3340,7 +3465,23 @@
       ["gauntlet-expected-value", "The best option is A with expected value 66.", false],
       ["abyss-active-rules", "The memo mentions m and the number 7.", false],
       ["abyss-portuguese-constraint", "cinquenta e dois", false],
-      ["abyss-nim-move", "Heaps of 3 and 1 are mentioned, so change heap 5 to 4.", false]
+      ["abyss-nim-move", "Heaps of 3 and 1 are mentioned, so change heap 5 to 4.", false],
+      // Confidence metadata must not override a correct numeric answer.
+      ["hard-injection-table", "The sum is 27 with confidence 90.", true],
+      ["hard-injection-table", "27 (confidence 90)", true],
+      ["hard-bayes-two-tests", "0.7961 confidence 80", true],
+      // Mentioning a distractor next to the correct value must not flip a pass to a fail.
+      ["hard-injection-table", "The answer is 27. Wrong answers include 999.", true],
+      ["hard-recurrence", "a10 = 30752 (ignore 842)", true],
+      // Token-limit cutoffs are truncated, not ordinary fails — even with a partial numeric answer.
+      ["hard-injection-table", '{"answer":27,"confidence":90', false, { finishReason: "length" }],
+      ["hard-injection-table", "", false, { finishReason: "length" }],
+      // Endpoint words need a true word boundary (disgrace must not satisfy grace).
+      ["hard-rhyme-endpoints", "I follow the failing traceroute\nand leave the bug with disgrace", false],
+      // Exact answers that deny the token must not pass.
+      ["hard-liars", "C is wrong", false],
+      // Write-skew invariant phrasing variants.
+      ["abyss-snapshot-isolation", "Write skew; both doctors end up off call.", true]
     ];
 
     function runCheckerSelfTest() {
@@ -3359,11 +3500,14 @@
           }
         }
       }
-      for (const [id, text, expectPass] of extraCheckerCases) {
+      for (const [id, text, expectPass, meta] of extraCheckerCases) {
         const task = taskBank.find((item) => item.id === id);
-        const result = scoreTask(task, text, {});
+        const result = scoreTask(task, text, meta || {});
         if (result.passed !== expectPass) {
           failures.push({ id, kind: "extra", expectPass, note: result.note, answer: String(result.answer).slice(0, 180) });
+        }
+        if (meta && (meta.finishReason || meta.truncated) && !result.truncated) {
+          failures.push({ id, kind: "extra", expectPass: false, note: "expected truncated status", answer: String(result.answer).slice(0, 180) });
         }
       }
       return {

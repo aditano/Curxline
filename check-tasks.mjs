@@ -45,13 +45,24 @@ const sandbox = {
   },
   localStorage: {
     getItem(key) {
-      return store.has(key) ? store.get(key) : null;
+      return store.has(`local:${key}`) ? store.get(`local:${key}`) : null;
     },
     setItem(key, value) {
-      store.set(key, String(value));
+      store.set(`local:${key}`, String(value));
     },
     removeItem(key) {
-      store.delete(key);
+      store.delete(`local:${key}`);
+    }
+  },
+  sessionStorage: {
+    getItem(key) {
+      return store.has(`session:${key}`) ? store.get(`session:${key}`) : null;
+    },
+    setItem(key, value) {
+      store.set(`session:${key}`, String(value));
+    },
+    removeItem(key) {
+      store.delete(`session:${key}`);
     }
   },
   location: { origin: "http://localhost" },
